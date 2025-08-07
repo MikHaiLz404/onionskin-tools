@@ -1,0 +1,33 @@
+{
+    "version": "2023.1",
+    "maya_version": "2023+",
+    "python_version": "3.7+",
+    "ui_framework": "PySide6",
+    "last_updated": "2025-06-19",
+    "compatibility": {
+        "maya_2023": true,
+        "maya_2024": true,
+        "maya_2025": true,
+        "maya_2022": false,
+        "python_2": false,
+        "pyside2": false
+    },
+    "features": {
+        "skinned_mesh_support": true,
+        "relative_onions": true,
+        "absolute_onions": true,
+        "keyframe_display": true,
+        "custom_tinting": true,
+        "shader_based_rendering": true,
+        "vram_buffering": true,
+        "auto_cleanup": true
+    },
+    "supported_renderers": [
+        "Viewport 2.0"
+    ],
+    "supported_graphics_apis": [
+        "OpenGL",
+        "DirectX11"
+    ],
+    "notes": "Maya 2023 compatible version with PySide6 support. All original features maintained with enhanced stability."
+}
