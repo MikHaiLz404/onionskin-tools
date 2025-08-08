@@ -610,7 +610,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.settings_clearBuffer.triggered.connect(self.clearBuffer)
         self.settings_autoClearBuffer.triggered.connect(self.setAutoClearBuffer)
         self.settings_preferences.triggered.connect(self.changePrefs)  # FIXED: Connect preferences menu
-        self.settings_saveSettings.triggered.connect(self.saveSettings)
+        self.settings_saveSettings.triggered.connect(self.settings_manager.saveSettings)
 
         self.targetObjects_grp.clicked.connect(self.toggleGroupBox)
         self.onionSkinFrames_grp.clicked.connect(self.toggleGroupBox)
