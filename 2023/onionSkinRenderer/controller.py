@@ -259,38 +259,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.toolPath = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
         self.activeEditor = None
         
-        # Auto Maya detection functionality - เอมิลี่จัดให้เลยนะคะ~ (Simple & Reliable)
-        self.autoDetectMaya = True  # Always enabled
-        self.mayaMainWindow = parent
-        self.lastMayaState = True  # Assume Maya active at start
-        
-        # Check if Windows process detection is available
-        try:
-            import ctypes
-            self._checkWindowsProcess = self._checkWindowsProcess  # Enable Windows detection
-            if DEBUG_ALL: print('🔍 Windows process detection enabled')
-        except ImportError:
-            if DEBUG_ALL: print('🔍 Windows process detection not available')
-        
-        # --- Maya Activity Detection Timer (Currently Disabled) ---
-        # This timer is intended to automatically toggle the window's "Always on Top" state
-        # based on whether Maya is the active application. It is currently disabled because
-        # the implementation caused bugs, including the window "jumping" or moving unexpectedly
-        # when the state changed.
-        #
-        # Future work to re-enable this feature should focus on:
-        # 1. A more reliable method of checking if Maya is the active application. The current
-        #    `isMayaCurrentlyActive` method is complex and uses multiple fallbacks.
-        # 2. Ensuring that changing window flags with `setWindowFlags` does not reset the
-        #    window's position or size. The code attempts to save and restore geometry, but
-        #    this was not fully effective and led to the "jumping" issue. A robust solution
-        #    might involve platform-specific API calls or a different approach to managing
-        #    the "Always on Top" state that doesn't require recreating the window.
-        #
-        self.mayaDetectionTimer = QtCore.QTimer()
-        self.mayaDetectionTimer.timeout.connect(self.detectMayaActivity)
-        # self.mayaDetectionTimer.start(800) # DISABLED due to window position bugs.
-        
         # create the ui from the compiled qt designer file
         self.setupUi(self)
 
@@ -308,8 +276,8 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         # Set unique object name for identification - เอมิลี่จัดให้เลยนะคะ~
         self.setObjectName("onionSkinRendererMainWindow")
         
-        # FIXED: Remove default always on top - user controls manually
-        # self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        # Set the window to always stay on top of Maya.
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
         
         # Load settings now that UI and connections are established.
         self.settings_manager.loadSettings()
@@ -323,184 +291,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         # 🎬 Setup scene change detection
         self.setupSceneChangeDetection()
 
-    def detectMayaActivity(self):
-        """Detect if Maya is currently active - เอมิลี่จัดให้เลยนะคะ~"""
-        try:
-            mayaIsActive = self.isMayaCurrentlyActive()
-            
-            # Only update if state changed to avoid unnecessary window operations
-            if mayaIsActive != self.lastMayaState:
-                self.lastMayaState = mayaIsActive
-                self.updateWindowState(mayaIsActive)
-                
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Maya detection error: {e}')
-    
-    def isMayaCurrentlyActive(self):
-        """Check if Maya is the currently active application"""
-        try:
-            # Method 1: Check if Maya main window is active (most reliable)
-            if self.mayaMainWindow.isActiveWindow():
-                return True
-            
-            # Method 2: Check if any Maya child window is active
-            activeWindow = QtWidgets.QApplication.activeWindow()
-            if activeWindow and self.isWindowRelatedToMaya(activeWindow):
-                return True
-            
-            # Method 3: Process-level check - if another app is clearly active, Maya is not
-            try:
-                app = QtWidgets.QApplication.instance()
-                appState = app.applicationState()
-                
-                # If Qt says the application is not active, Maya is definitely not active
-                if appState != QtCore.Qt.ApplicationActive:
-                    return False
-                    
-            except Exception as e:
-                if DEBUG_ALL: print(f'🔍 App state check error: {e}')
-            
-            # Method 4: Windows-specific process check (more accurate)
-            if hasattr(self, '_checkWindowsProcess'):
-                return self._checkWindowsProcess()
-            
-            # Method 5: Final fallback - check if our window is visible but not active
-            # This indicates another app might be active
-            if self.isVisible() and not self.isActiveWindow():
-                # Check if any other non-Maya window might be active
-                try:
-                    activeWidget = QtWidgets.QApplication.activeWidget()
-                    if activeWidget and not self.isWindowRelatedToMaya(activeWidget):
-                        return False
-                except:
-                    pass
-            
-            # Conservative fallback: assume Maya is active
-            return True
-            
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Maya activity check error: {e}')
-            return True  # Conservative fallback
-    
-    def _checkWindowsProcess(self):
-        """Windows-specific method to check if Maya is the foreground process"""
-        try:
-            import ctypes
-            import ctypes.wintypes
-            import os
-            
-            # Get foreground window handle
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetForegroundWindow()
-            
-            if not hwnd:
-                return True  # Can't determine, assume Maya is active
-            
-            # Get process ID of foreground window
-            foreground_pid = ctypes.wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(foreground_pid))
-            
-            # Get current Maya process ID
-            current_pid = os.getpid()
-            
-            # Maya is active only if foreground process is Maya
-            is_maya_active = (foreground_pid.value == current_pid)
-            
-            if DEBUG_ALL:
-                print(f'🔍 Windows check: Maya PID={current_pid}, Foreground PID={foreground_pid.value}, Maya Active={is_maya_active}')
-            
-            return is_maya_active
-            
-        except ImportError:
-            # Not Windows or missing libraries
-            if DEBUG_ALL: print('🔍 Windows libraries not available')
-            return True
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Windows process check error: {e}')
-            return True
-    
-    def isWindowRelatedToMaya(self, window):
-        """Check if a window belongs to Maya"""
-        try:
-            if not window:
-                return False
-            
-            # Check window hierarchy
-            current = window
-            for _ in range(10):  # Limit depth to avoid infinite loops
-                if current == self.mayaMainWindow:
-                    return True
-                    
-                # Check object name for Maya indicators
-                objName = current.objectName()
-                if objName and ('maya' in objName.lower() or 'MayaWindow' in objName):
-                    return True
-                    
-                # Check window title for Maya indicators
-                title = current.windowTitle()
-                if title and ('maya' in title.lower() or 'autodesk' in title.lower()):
-                    return True
-                
-                parent = current.parent()
-                if not parent or parent == current:
-                    break
-                current = parent
-            
-            return False
-        except:
-            return False
-    
-    def updateWindowState(self, mayaIsActive):
-        """Update window always-on-top state based on Maya activity - Fixed window movement"""
-        try:
-            currentFlags = self.windowFlags()
-            hasAlwaysOnTop = bool(currentFlags & QtCore.Qt.WindowStaysOnTopHint)
-            
-            if mayaIsActive and not hasAlwaysOnTop:
-                # Maya is active, enable always on top
-                # 🔧 FIXED: Properly save and restore window geometry
-                savedGeometry = self.saveGeometry()  # This includes position, size, and window state
-                savedWindowState = self.saveState() if hasattr(self, 'saveState') else None
-                
-                # Change the window flags
-                self.setWindowFlags(currentFlags | QtCore.Qt.WindowStaysOnTopHint)
-                
-                # Show the window (required after setWindowFlags)
-                self.show()
-                
-                # 🔧 FIXED: Restore the exact geometry and state
-                self.restoreGeometry(savedGeometry)
-                if savedWindowState:
-                    self.restoreState(savedWindowState)
-                
-                # 🔧 FIXED: Force window to activate and stay in correct position
-                self.activateWindow()
-                self.raise_()
-                
-                if DEBUG_ALL: print("🔼 OnionSkinRenderer: Auto-enabled (Maya active) - Position preserved")
-                
-            elif not mayaIsActive and hasAlwaysOnTop:
-                # Maya not active, disable always on top
-                # 🔧 FIXED: Properly save and restore window geometry
-                savedGeometry = self.saveGeometry()  # This includes position, size, and window state
-                savedWindowState = self.saveState() if hasattr(self, 'saveState') else None
-                
-                # Change the window flags
-                self.setWindowFlags(currentFlags & ~QtCore.Qt.WindowStaysOnTopHint)
-                
-                # Show the window (required after setWindowFlags)
-                self.show()
-                
-                # 🔧 FIXED: Restore the exact geometry and state
-                self.restoreGeometry(savedGeometry)
-                if savedWindowState:
-                    self.restoreState(savedWindowState)
-                
-                if DEBUG_ALL: print("🔽 OnionSkinRenderer: Auto-disabled (Maya inactive) - Position preserved")
-                
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Window state update error: {e}')
-
     #
     def closeEvent(self, event):
         """🚪 Enhanced close event handler with geometry saving - เอมิลี่จัดให้เลยนะคะ~"""
@@ -513,11 +303,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.isReopeningWindow = getattr(self, '_isReopeningWindow', False)
         
         try:
-            # 1. Stop detection timer
-            if hasattr(self, 'mayaDetectionTimer'):
-                self.mayaDetectionTimer.stop()
-                self.mayaDetectionTimer.deleteLater()
-            
             # 1.5. Clean up scene change callbacks
             if hasattr(self, 'sceneCallback'):
                 import maya.OpenMaya as om
@@ -560,11 +345,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         if DEBUG_ALL: print('🚪 OnionSkinRenderer: Dock close event triggered')
         
         try:
-            # Stop detection timer
-            if hasattr(self, 'mayaDetectionTimer'):
-                self.mayaDetectionTimer.stop()
-                self.mayaDetectionTimer.deleteLater()
-            
             # Save and cleanup
             self.settings_manager.saveSettings()
             core.uninitializeOverride()
