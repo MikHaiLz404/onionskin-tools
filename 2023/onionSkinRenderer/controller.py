@@ -300,6 +300,9 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         else:
             self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
 
+        # Setup the settings manager BEFORE creating connections that use it.
+        self.settings_manager = SettingsManager(self)
+
         self.createConnections()
 
         # Set unique object name for identification - เอมิลี่จัดให้เลยนะคะ~
@@ -308,8 +311,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         # FIXED: Remove default always on top - user controls manually
         # self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
         
-        # Setup the settings manager and load settings
-        self.settings_manager = SettingsManager(self)
+        # Load settings now that UI and connections are established.
         self.settings_manager.loadSettings()
         
         # 🔧 Restore window geometry from previous session
