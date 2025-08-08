@@ -147,6 +147,90 @@ def show(develop = False, dockable = False):
     
 
 
+class SettingsManager(object):
+    """
+    Handles loading and saving of the tool's settings to a JSON file.
+    """
+    def __init__(self, controller):
+        self.controller = controller
+        self.toolPath = controller.toolPath
+        self.preferences = {}
+
+    def loadSettings(self):
+        """Load settings from settings.txt and apply them to the UI and core."""
+        try:
+            with open(os.path.join(self.toolPath, 'settings.txt')) as json_file:
+                self.preferences = json.load(json_file)
+        except (IOError, ValueError):
+            self.preferences = {} # Start with empty prefs if file doesn't exist or is corrupt
+
+        c = self.controller
+        c.preferences = self.preferences # Also assign to controller for window geometry compatibility.
+
+        c.settings_autoClearBuffer.setChecked(self.preferences.setdefault('autoClearBuffer', True))
+        core.OSR_INSTANCE.setAutoClearBuffer(self.preferences.setdefault('autoClearBuffer', True))
+
+        c.relative_keyframes_chkbx.setChecked(self.preferences.setdefault('displayKeyframes', True))
+        core.OSR_INSTANCE.setRelativeDisplayMode(self.preferences.setdefault('displayKeyframes', True))
+
+        c.setOnionSkinColor(c.relative_futureTint_btn, self.preferences.setdefault('rFutureTint', [0, 0, 125]))
+        c.setOnionSkinColor(c.relative_pastTint_btn, self.preferences.setdefault('rPastTint', [0, 125, 0]))
+        c.setOnionSkinColor(c.absolute_tint_btn, self.preferences.setdefault('aTint', [125, 0, 0]))
+        core.OSR_INSTANCE.setTintSeed(self.preferences.setdefault('tintSeed', 0))
+        c.tint_type_cBox.setCurrentIndex(self.preferences.setdefault('tintType', 0))
+
+        c.onionType_cBox.setCurrentIndex(self.preferences.setdefault('onionType', 1))
+        c.drawBehind_chkBx.setChecked(self.preferences.setdefault('drawBehind', True))
+
+        c.relativeFrameCount = self.preferences.setdefault('relativeFrameAmount', 4) * 2
+        c.refreshRelativeFrame()
+        activeRelativeFrames = self.preferences.setdefault('activeRelativeFrames', [])
+        for child in c.relative_frame.findChildren(OnionListFrame):
+            if int(child.frame_number.text()) in activeRelativeFrames:
+                child.frame_visibility_btn.setChecked(True)
+
+        c.relative_step_spinBox.setValue(self.preferences.setdefault('relativeStep', 1))
+
+        core.OSR_INSTANCE.setMaxBuffer(self.preferences.setdefault('maxBufferSize', 200))
+        core.OSR_INSTANCE.setOutlineWidth(self.preferences.setdefault('outlineWidth', 3))
+
+    def saveSettings(self):
+        """Save the current UI and core settings to settings.txt."""
+        if DEBUG_ALL: print('start save')
+        c = self.controller
+        data = {}
+        data['autoClearBuffer'] = c.settings_autoClearBuffer.isChecked()
+        data['displayKeyframes'] = c.relative_keyframes_chkbx.isChecked()
+        data['rFutureTint'] = self._extractRGBFromStylesheet(c.relative_futureTint_btn.styleSheet())
+        data['rPastTint'] = self._extractRGBFromStylesheet(c.relative_pastTint_btn.styleSheet())
+        data['aTint'] = self._extractRGBFromStylesheet(c.absolute_tint_btn.styleSheet())
+        data['tintSeed'] = core.OSR_INSTANCE.getTintSeed()
+        data['tintType'] = c.tint_type_cBox.currentIndex()
+        data['relativeFrameAmount'] = c.relativeFrameCount // 2
+        data['relativeStep'] = c.relative_step_spinBox.value()
+        data['maxBufferSize'] = core.OSR_INSTANCE.getMaxBuffer()
+        data['outlineWidth'] = core.OSR_INSTANCE.getOutlineWidth()
+        data['onionType'] = c.onionType_cBox.currentIndex()
+        data['drawBehind'] = c.drawBehind_chkBx.isChecked()
+        data['activeRelativeFrames'] = c.getActiveRelativeFrameIndices()
+
+        # The controller updates its own 'preferences' dictionary with window geometry.
+        # We'll pull that in here before saving.
+        if 'windowGeometry' in c.preferences:
+            data['windowGeometry'] = c.preferences['windowGeometry']
+
+        try:
+            with open(os.path.join(self.toolPath, 'settings.txt'), 'w') as outfile:
+                json.dump(data, outfile, indent=4)
+            if DEBUG_ALL: print('end save - success')
+        except Exception as e:
+            if DEBUG_ALL: print(f'Settings save error: {e}')
+
+    def _extractRGBFromStylesheet(self, s):
+        """Utility to get an RGB list from a Qt stylesheet color string."""
+        return [int(x) for x in (s[s.find("(") + 1:s.find(")")]).split(',')]
+
+
 '''
 ONION SKIN RENDERER MAIN UI
 This class is the main ui window. It manages all user events and links to the core
@@ -188,11 +272,24 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         except ImportError:
             if DEBUG_ALL: print('🔍 Windows process detection not available')
         
-        # Simple timer for Maya detection
+        # --- Maya Activity Detection Timer (Currently Disabled) ---
+        # This timer is intended to automatically toggle the window's "Always on Top" state
+        # based on whether Maya is the active application. It is currently disabled because
+        # the implementation caused bugs, including the window "jumping" or moving unexpectedly
+        # when the state changed.
+        #
+        # Future work to re-enable this feature should focus on:
+        # 1. A more reliable method of checking if Maya is the active application. The current
+        #    `isMayaCurrentlyActive` method is complex and uses multiple fallbacks.
+        # 2. Ensuring that changing window flags with `setWindowFlags` does not reset the
+        #    window's position or size. The code attempts to save and restore geometry, but
+        #    this was not fully effective and led to the "jumping" issue. A robust solution
+        #    might involve platform-specific API calls or a different approach to managing
+        #    the "Always on Top" state that doesn't require recreating the window.
+        #
         self.mayaDetectionTimer = QtCore.QTimer()
         self.mayaDetectionTimer.timeout.connect(self.detectMayaActivity)
-        # DISABLED: Prevents window jumping and theme changes
-        # self.mayaDetectionTimer.start(800)  # Check every 800ms - balance between responsiveness and performance
+        # self.mayaDetectionTimer.start(800) # DISABLED due to window position bugs.
         
         # create the ui from the compiled qt designer file
         self.setupUi(self)
@@ -211,8 +308,9 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         # FIXED: Remove default always on top - user controls manually
         # self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
         
-        # load settings from the settings file
-        self.loadSettings()
+        # Setup the settings manager and load settings
+        self.settings_manager = SettingsManager(self)
+        self.settings_manager.loadSettings()
         
         # 🔧 Restore window geometry from previous session
         self.restoreWindowGeometry()
@@ -426,7 +524,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
                 if DEBUG_ALL: print('🎬 Scene callbacks cleaned up')
             
             # 2. Save settings before closing (now includes geometry)
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             
             # 3. 🚨 ONLY uninitialize Core if this is a REAL close, not a reopen
             if not self.isReopeningWindow:
@@ -466,7 +564,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
                 self.mayaDetectionTimer.deleteLater()
             
             # Save and cleanup
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             core.uninitializeOverride()
             
             # Clear global reference
@@ -647,7 +745,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
     def toggleRelativeKeyframeDisplay(self):
         sender = self.sender()
         core.OSR_INSTANCE.setRelativeDisplayMode(self.sender().isChecked())
-        self.saveSettings()
+        self.settings_manager.saveSettings()
 
     # 
     def addAbsoluteTargetFrame(self, **kwargs):
@@ -693,7 +791,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         color = QtWidgets.QColorDialog.getColor()
         if color.isValid():
             self.setOnionSkinColor(self.sender(), color.getRgb())
-        self.saveSettings()
+        self.settings_manager.saveSettings()
 
     #
     def setOpacityForRelativeTargetFrame(self):
@@ -728,12 +826,12 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
             core.OSR_INSTANCE.setTintSeed(values['tintSeed'])
             self.relativeFrameCount = values['relativeKeyCount']*2
             self.refreshRelativeFrame()
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             
     #     
     def setRelativeStep(self):
         core.OSR_INSTANCE.setRelativeStep(self.sender().value())
-        self.saveSettings()     
+        self.settings_manager.saveSettings()
 
     # togle active or saved editor between onion Skin Renderer and vp2
     def toggleRenderer(self):
@@ -862,70 +960,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
     def setOnionSkinColor(self, btn, rgba):
             btn.setStyleSheet('background-color: rgb(%s,%s,%s);'%(rgba[0], rgba[1], rgba[2]))
             core.OSR_INSTANCE.setTint(rgba, btn.objectName())
-
-    #
-    def loadSettings(self):
-        with open(os.path.join(self.toolPath,'settings.txt')) as json_file:  
-            self.preferences = json.load(json_file)
-            self.settings_autoClearBuffer.setChecked(self.preferences.setdefault('autoClearBuffer',True))
-            core.OSR_INSTANCE.setAutoClearBuffer(self.preferences.setdefault('autoClearBuffer',True))
-
-            self.relative_keyframes_chkbx.setChecked(self.preferences.setdefault('displayKeyframes',True))
-            core.OSR_INSTANCE.setRelativeDisplayMode(self.preferences.setdefault('displayKeyframes',True))
-
-            self.setOnionSkinColor(self.relative_futureTint_btn, self.preferences.setdefault('rFutureTint',[0,0,125]))
-            self.setOnionSkinColor(self.relative_pastTint_btn, self.preferences.setdefault('rPastTint',[0,125,0]))
-            self.setOnionSkinColor(self.absolute_tint_btn, self.preferences.setdefault('aTint', [125,0,0]))
-            core.OSR_INSTANCE.setTintSeed(self.preferences.setdefault('tintSeed', 0))
-            self.tint_type_cBox.setCurrentIndex(self.preferences.setdefault('tintType',0))
-
-
-            self.onionType_cBox.setCurrentIndex(self.preferences.setdefault('onionType',1))
-            self.drawBehind_chkBx.setChecked(self.preferences.setdefault('drawBehind', True))
-
-            self.relativeFrameCount = self.preferences.setdefault('relativeFrameAmount',4)
-            self.refreshRelativeFrame()
-            activeRelativeFrames = self.preferences.setdefault('activeRelativeFrames',[])
-            for child in self.relative_frame.findChildren(OnionListFrame):
-                if int(child.frame_number.text()) in activeRelativeFrames:
-                    child.frame_visibility_btn.setChecked(True)
-
-            self.relative_step_spinBox.setValue(self.preferences.setdefault('relativeStep', 1))
-
-            core.OSR_INSTANCE.setMaxBuffer(self.preferences.setdefault('maxBufferSize', 200))
-            core.OSR_INSTANCE.setOutlineWidth(self.preferences.setdefault('outlineWidth',3))
-
-    
-    # save values into a json file
-    def saveSettings(self):
-        if DEBUG_ALL: print('start save')
-        data = {}
-        data['autoClearBuffer'] = self.settings_autoClearBuffer.isChecked()
-        data['displayKeyframes'] = self.relative_keyframes_chkbx.isChecked()
-        data['rFutureTint'] = self.extractRGBFromStylesheet(self.relative_futureTint_btn.styleSheet())
-        data['rPastTint'] = self.extractRGBFromStylesheet(self.relative_pastTint_btn.styleSheet())
-        data['aTint'] = self.extractRGBFromStylesheet(self.absolute_tint_btn.styleSheet())
-        data['tintSeed'] = core.OSR_INSTANCE.getTintSeed()
-        data['tintType'] = self.tint_type_cBox.currentIndex()
-        data['relativeFrameAmount'] = self.relativeFrameCount
-        data['relativeStep'] = self.relative_step_spinBox.value()
-        data['maxBufferSize'] = core.OSR_INSTANCE.getMaxBuffer()
-        data['outlineWidth'] = core.OSR_INSTANCE.getOutlineWidth()
-        data['onionType'] = self.onionType_cBox.currentIndex()
-        data['drawBehind'] = self.drawBehind_chkBx.isChecked()
-        data['activeRelativeFrames'] = self.getActiveRelativeFrameIndices()
-
-        try:
-            with open(os.path.join(self.toolPath,'settings.txt'), 'w') as outfile:  
-                json.dump(data, outfile)
-            if DEBUG_ALL: print('end save - success')
-        except Exception as e:
-            if DEBUG_ALL: print(f'Settings save error: {e}')
-            # Continue without saving to avoid blocking the UI
-        
-    # 
-    def extractRGBFromStylesheet(self, s):
-        return [int(x) for x in (s[s.find("(")+1:s.find(")")]).split(',')]
 
     def getActiveRelativeFrameIndices(self):
         activeFrames = []
@@ -1229,7 +1263,7 @@ the widget for displaying a frame in a list. includes visibility, opacity slider
 and on demand a remove button   
 '''
 class OnionListFrame(QtWidgets.QWidget, wdgt_Frame.Ui_onionSkinFrame_layout):
-    def __init__(self, parent = getMayaMainWindow()):
+    def __init__(self, parent=None):
         super(OnionListFrame, self).__init__(parent)
         self.setupUi(self)
 
@@ -1254,7 +1288,7 @@ OBJECT WIDGET
 the widget for displaying an object in a list
 '''
 class TargetObjectListWidget(QtWidgets.QWidget, wdgt_MeshListObj.Ui_onionSkinObject_layout):
-    def __init__(self, parent = getMayaMainWindow()):
+    def __init__(self, parent=None):
         super(TargetObjectListWidget, self).__init__(parent)
         self.setupUi(self)
 
