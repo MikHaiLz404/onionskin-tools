@@ -309,45 +309,59 @@ class ViewRenderOverride(omr.MRenderOverride):
     # this is basically the render function
     # it is called by maya every refresh of the screen and handles the passes
     def setup(self, destination):
-        if DEBUG:
-            print("Starting setup")
-        # set the size of the target, so when the viewport scales,
-        # the targets remain a 1:1 pixel size
+        if DEBUG: print("Starting setup")
+
+        self._update_render_targets()
+        self._setup_relative_blend_passes()
+        self._setup_absolute_blend_passes()
+
+        if DEBUG: print("finish setup")
+
+    def _update_render_targets(self):
+        """
+        Update render targets to match viewport size and buffer the current frame's onion skin.
+        """
+        # Set the size of the target to match the viewport
         targetSize = omr.MRenderer.outputTargetSize()
         self.standardTargetDescr.setWidth(targetSize[0])
         self.standardTargetDescr.setHeight(targetSize[1])
         self.blendTargetDescr.setWidth(targetSize[0])
         self.blendTargetDescr.setHeight(targetSize[1])
 
-        # update the standard target to the just set size
+        # Update the standard target with the new description
         self.standardTarget.updateDescription(self.standardTargetDescr)
-        # update the onion target to a new name, because targetMgr will return None
-        # if the name already exists
+
+        # Get the current frame and prepare a unique name for the onion skin target
         self.currentFrame = oma.MAnimControl.currentTime().value
         onionTargetName = "onionTarget%s" % self.currentFrame
         self.blendTargetDescr.setName(onionTargetName)
-        
-        # if the onion is not buffered do so, otherwise update the buffered
+
+        # If the onion skin for the current frame is not buffered, create a new target.
+        # Otherwise, update the existing one.
         if self.currentFrame not in self.onionSkinBuffer:
             self.onionSkinBuffer[self.currentFrame] = self.targetMgr.acquireRenderTarget(self.blendTargetDescr)
             self.onionSkinBufferQueue.append(self.currentFrame)
-            if len(self.onionSkinBufferQueue) > self.maxOnionSkinBufferSize: self.deleteOldestOnionSkinBuffer()
+            # If the buffer is full, remove the oldest frame
+            if len(self.onionSkinBufferQueue) > self.maxOnionSkinBufferSize:
+                self.deleteOldestOnionSkinBuffer()
         else:
             self.onionSkinBuffer.get(self.currentFrame).updateDescription(self.blendTargetDescr)
-        # then set the render target to the appropriate os
+
+        # Set the onion skin pass to render to the correct target and use the correct objects
         self.onionSkinPass.setRenderTarget(self.onionSkinBuffer.get(self.currentFrame))
-        # set the filter list to the osr
         self.onionSkinPass.setObjectFilterList(self.onionObjectList)
 
+    def _setup_relative_blend_passes(self):
+        """
+        Configure the blend passes for relative onion skins.
+        """
         if DEBUG: print("setting render targets for relative frame targets")
-        # setting targets to relative blend passes
         for blendPass in self.relativeBlendPasses.values():
             targetFrame = 0
             if self.relativeKeyDisplay:
                 targetFrame = blendPass.frame
             else:
                 targetFrame = blendPass.frame * self.relativeStep + self.currentFrame
-            
 
             if targetFrame in self.onionSkinBuffer:
                 if not self.relativeKeyDisplay:
@@ -355,71 +369,46 @@ class ViewRenderOverride(omr.MRenderOverride):
                 blendPass.setInputTargets(self.standardTarget, self.onionSkinBuffer[targetFrame])
                 blendPass.setStencilTarget(self.onionSkinBuffer[self.currentFrame])
 
-                # Constant Color
-                if self.tintType == 0:
-                    # future tint
-                    if targetFrame > self.currentFrame:
-                        blendPass.setTint((
-                            self.relativeFutureTint[0]/255.0 / self.lerp(1.0, self.relativeFutureTint[0]/255.0, self.tintStrength),
-                            self.relativeFutureTint[1]/255.0 / self.lerp(1.0, self.relativeFutureTint[1]/255.0, self.tintStrength), 
-                            self.relativeFutureTint[2]/255.0 / self.lerp(1.0, self.relativeFutureTint[2]/255.0, self.tintStrength), 
-                            1.0))
-                    # past tint
-                    else:
-                        blendPass.setTint((
-                            self.relativePastTint[0]/255.0 / self.lerp(1.0, self.relativePastTint[0]/255.0, self.tintStrength),
-                            self.relativePastTint[1]/255.0 / self.lerp(1.0, self.relativePastTint[1]/255.0, self.tintStrength), 
-                            self.relativePastTint[2]/255.0 / self.lerp(1.0, self.relativePastTint[2]/255.0, self.tintStrength),  
-                            1.0))
-                # Relative Random
-                elif self.tintType == 1:
+                # Set tint color based on user settings
+                if self.tintType == 0:  # Constant Color
+                    tint = self.relativePastTint if targetFrame <= self.currentFrame else self.relativeFutureTint
+                    blendPass.setTint((
+                        tint[0] / 255.0 / self.lerp(1.0, tint[0] / 255.0, self.tintStrength),
+                        tint[1] / 255.0 / self.lerp(1.0, tint[1] / 255.0, self.tintStrength),
+                        tint[2] / 255.0 / self.lerp(1.0, tint[2] / 255.0, self.tintStrength),
+                        1.0))
+                elif self.tintType == 1:  # Relative Random
                     random.seed(blendPass.frame + self.tintSeed + 1)
-                    blendPass.setTint((
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        1.0
-                    ))
-                # Static Random
-                else:
-                    # using the frame as a random seed,
-                    # so each frame always has a static color
+                    blendPass.setTint((random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, 1.0))
+                else:  # Static Random
                     random.seed(targetFrame + self.tintSeed)
-                    blendPass.setTint((
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        1.0
-                    ))
+                    blendPass.setTint((random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, 1.0))
             else:
                 blendPass.setActive(False)
 
+    def _setup_absolute_blend_passes(self):
+        """
+        Configure the blend passes for absolute onion skins.
+        """
         if DEBUG: print("setting render targets for absolute frame targets")
-        # setting targets to absolute blend passes
         for blendPass in self.absoluteBlendPasses.values():
             if blendPass.frame in self.onionSkinBuffer:
                 blendPass.setActive(True)
                 blendPass.setInputTargets(self.standardTarget, self.onionSkinBuffer[blendPass.frame])
                 blendPass.setStencilTarget(self.onionSkinBuffer[self.currentFrame])
-                if self.tintType == 0:
-                    blendPass.setTint((
-                        self.absoluteTint[0]/255.0 / self.lerp(1.0, self.absoluteTint[0]/255.0, self.tintStrength),
-                        self.absoluteTint[1]/255.0 / self.lerp(1.0, self.absoluteTint[1]/255.0, self.tintStrength),
-                        self.absoluteTint[2]/255.0 / self.lerp(1.0, self.absoluteTint[2]/255.0, self.tintStrength)
-                    ))
-                else:
-                    random.seed(blendPass.frame + self.tintSeed)
-                    blendPass.setTint((
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        random.randrange(0,100)/100.0,
-                        1.0
-                    ))
 
+                # Set tint color based on user settings
+                if self.tintType == 0:  # Constant Color
+                    blendPass.setTint((
+                        self.absoluteTint[0] / 255.0 / self.lerp(1.0, self.absoluteTint[0] / 255.0, self.tintStrength),
+                        self.absoluteTint[1] / 255.0 / self.lerp(1.0, self.absoluteTint[1] / 255.0, self.tintStrength),
+                        self.absoluteTint[2] / 255.0 / self.lerp(1.0, self.absoluteTint[2] / 255.0, self.tintStrength)
+                    ))
+                else:  # Static or Relative Random (uses Static for absolute frames)
+                    random.seed(blendPass.frame + self.tintSeed)
+                    blendPass.setTint((random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, random.randrange(0, 100) / 100.0, 1.0))
             else:
                 blendPass.setActive(False)
-
-        if DEBUG: print("finish setup")
 
             
 
@@ -602,9 +591,11 @@ class ViewRenderOverride(omr.MRenderOverride):
     # attached to all cameras found on plugin launch, removes onions when the camera moves
     # but only on user input. animated cameras are not affected
     def cameraMovedCB(self, msg, plug1, plug2, payload):
-        if (msg == 2056 
+        # Check if the attribute set flag is part of the message.
+        # Callbacks can fire with combined messages (e.g. kAttributeSet | kOtherPlugSet)
+        if ((msg & om.MNodeMessage.kAttributeSet)
             and self.autoClearBuffer
-            and (self.isPlugInteresting(plug1, 'translate') 
+            and (self.isPlugInteresting(plug1, 'translate')
             or self.isPlugInteresting(plug1, 'rotate'))):
             self.clearOnionSkinBuffer(False)
 

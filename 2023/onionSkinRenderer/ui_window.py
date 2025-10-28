@@ -1,9 +1,27 @@
 # -*- coding: utf-8 -*-
 
 # Form implementation generated from reading ui file 'ui_window.ui'
-# Updated for Maya 2023 - PySide2 compatibility
 #
 # WARNING! All changes made in this file will be lost!
+#
+# ----------------------------------------------------------------------------
+#
+# ** DEVELOPER WARNING **
+# This file has been MANUALLY EDITED to support both PySide2 and PySide6.
+# If you regenerate this file from 'ui_window.ui' using a uic tool,
+# you MUST re-apply the following changes:
+#
+# 1. Add the PYSIDE_VERSION check at the top to import from either
+#    PySide6 or PySide2.
+# 2. Find all instances of `QtWidgets.QSizePolicy.Policy` and wrap them
+#    in a PYSIDE_VERSION check to use the correct enum name for each version.
+#    (e.g., `QtWidgets.QSizePolicy.Policy.Minimum` vs `QtWidgets.QSizePolicy.Minimum`)
+# 3. Find all instances of Qt enums (e.g. `QtCore.Qt.AlignmentFlag`) and
+#    ensure they are compatible or wrapped in a version check.
+#
+# It is recommended to create a script to automate this patching process.
+#
+# ----------------------------------------------------------------------------
 
 # Maya version compatibility - เอมิลี่จัดให้นะคะ~
 try:

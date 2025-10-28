@@ -147,6 +147,90 @@ def show(develop = False, dockable = False):
     
 
 
+class SettingsManager(object):
+    """
+    Handles loading and saving of the tool's settings to a JSON file.
+    """
+    def __init__(self, controller):
+        self.controller = controller
+        self.toolPath = controller.toolPath
+        self.preferences = {}
+
+    def loadSettings(self):
+        """Load settings from settings.txt and apply them to the UI and core."""
+        try:
+            with open(os.path.join(self.toolPath, 'settings.txt')) as json_file:
+                self.preferences = json.load(json_file)
+        except (IOError, ValueError):
+            self.preferences = {} # Start with empty prefs if file doesn't exist or is corrupt
+
+        c = self.controller
+        c.preferences = self.preferences # Also assign to controller for window geometry compatibility.
+
+        c.settings_autoClearBuffer.setChecked(self.preferences.setdefault('autoClearBuffer', True))
+        core.OSR_INSTANCE.setAutoClearBuffer(self.preferences.setdefault('autoClearBuffer', True))
+
+        c.relative_keyframes_chkbx.setChecked(self.preferences.setdefault('displayKeyframes', True))
+        core.OSR_INSTANCE.setRelativeDisplayMode(self.preferences.setdefault('displayKeyframes', True))
+
+        c.setOnionSkinColor(c.relative_futureTint_btn, self.preferences.setdefault('rFutureTint', [0, 0, 125]))
+        c.setOnionSkinColor(c.relative_pastTint_btn, self.preferences.setdefault('rPastTint', [0, 125, 0]))
+        c.setOnionSkinColor(c.absolute_tint_btn, self.preferences.setdefault('aTint', [125, 0, 0]))
+        core.OSR_INSTANCE.setTintSeed(self.preferences.setdefault('tintSeed', 0))
+        c.tint_type_cBox.setCurrentIndex(self.preferences.setdefault('tintType', 0))
+
+        c.onionType_cBox.setCurrentIndex(self.preferences.setdefault('onionType', 1))
+        c.drawBehind_chkBx.setChecked(self.preferences.setdefault('drawBehind', True))
+
+        c.relativeFrameCount = self.preferences.setdefault('relativeFrameAmount', 4) * 2
+        c.refreshRelativeFrame()
+        activeRelativeFrames = self.preferences.setdefault('activeRelativeFrames', [])
+        for child in c.relative_frame.findChildren(OnionListFrame):
+            if int(child.frame_number.text()) in activeRelativeFrames:
+                child.frame_visibility_btn.setChecked(True)
+
+        c.relative_step_spinBox.setValue(self.preferences.setdefault('relativeStep', 1))
+
+        core.OSR_INSTANCE.setMaxBuffer(self.preferences.setdefault('maxBufferSize', 200))
+        core.OSR_INSTANCE.setOutlineWidth(self.preferences.setdefault('outlineWidth', 3))
+
+    def saveSettings(self):
+        """Save the current UI and core settings to settings.txt."""
+        if DEBUG_ALL: print('start save')
+        c = self.controller
+        data = {}
+        data['autoClearBuffer'] = c.settings_autoClearBuffer.isChecked()
+        data['displayKeyframes'] = c.relative_keyframes_chkbx.isChecked()
+        data['rFutureTint'] = self._extractRGBFromStylesheet(c.relative_futureTint_btn.styleSheet())
+        data['rPastTint'] = self._extractRGBFromStylesheet(c.relative_pastTint_btn.styleSheet())
+        data['aTint'] = self._extractRGBFromStylesheet(c.absolute_tint_btn.styleSheet())
+        data['tintSeed'] = core.OSR_INSTANCE.getTintSeed()
+        data['tintType'] = c.tint_type_cBox.currentIndex()
+        data['relativeFrameAmount'] = c.relativeFrameCount // 2
+        data['relativeStep'] = c.relative_step_spinBox.value()
+        data['maxBufferSize'] = core.OSR_INSTANCE.getMaxBuffer()
+        data['outlineWidth'] = core.OSR_INSTANCE.getOutlineWidth()
+        data['onionType'] = c.onionType_cBox.currentIndex()
+        data['drawBehind'] = c.drawBehind_chkBx.isChecked()
+        data['activeRelativeFrames'] = c.getActiveRelativeFrameIndices()
+
+        # The controller updates its own 'preferences' dictionary with window geometry.
+        # We'll pull that in here before saving.
+        if 'windowGeometry' in c.preferences:
+            data['windowGeometry'] = c.preferences['windowGeometry']
+
+        try:
+            with open(os.path.join(self.toolPath, 'settings.txt'), 'w') as outfile:
+                json.dump(data, outfile, indent=4)
+            if DEBUG_ALL: print('end save - success')
+        except Exception as e:
+            if DEBUG_ALL: print(f'Settings save error: {e}')
+
+    def _extractRGBFromStylesheet(self, s):
+        """Utility to get an RGB list from a Qt stylesheet color string."""
+        return [int(x) for x in (s[s.find("(") + 1:s.find(")")]).split(',')]
+
+
 '''
 ONION SKIN RENDERER MAIN UI
 This class is the main ui window. It manages all user events and links to the core
@@ -175,25 +259,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.toolPath = os.path.dirname(os.path.abspath(inspect.stack()[0][1]))
         self.activeEditor = None
         
-        # Auto Maya detection functionality - เอมิลี่จัดให้เลยนะคะ~ (Simple & Reliable)
-        self.autoDetectMaya = True  # Always enabled
-        self.mayaMainWindow = parent
-        self.lastMayaState = True  # Assume Maya active at start
-        
-        # Check if Windows process detection is available
-        try:
-            import ctypes
-            self._checkWindowsProcess = self._checkWindowsProcess  # Enable Windows detection
-            if DEBUG_ALL: print('🔍 Windows process detection enabled')
-        except ImportError:
-            if DEBUG_ALL: print('🔍 Windows process detection not available')
-        
-        # Simple timer for Maya detection
-        self.mayaDetectionTimer = QtCore.QTimer()
-        self.mayaDetectionTimer.timeout.connect(self.detectMayaActivity)
-        # DISABLED: Prevents window jumping and theme changes
-        # self.mayaDetectionTimer.start(800)  # Check every 800ms - balance between responsiveness and performance
-        
         # create the ui from the compiled qt designer file
         self.setupUi(self)
 
@@ -203,16 +268,19 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         else:
             self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
 
+        # Setup the settings manager BEFORE creating connections that use it.
+        self.settings_manager = SettingsManager(self)
+
         self.createConnections()
 
         # Set unique object name for identification - เอมิลี่จัดให้เลยนะคะ~
         self.setObjectName("onionSkinRendererMainWindow")
         
-        # FIXED: Remove default always on top - user controls manually
-        # self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
+        # Set the window to always stay on top of Maya.
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.WindowStaysOnTopHint)
         
-        # load settings from the settings file
-        self.loadSettings()
+        # Load settings now that UI and connections are established.
+        self.settings_manager.loadSettings()
         
         # 🔧 Restore window geometry from previous session
         self.restoreWindowGeometry()
@@ -222,184 +290,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         
         # 🎬 Setup scene change detection
         self.setupSceneChangeDetection()
-
-    def detectMayaActivity(self):
-        """Detect if Maya is currently active - เอมิลี่จัดให้เลยนะคะ~"""
-        try:
-            mayaIsActive = self.isMayaCurrentlyActive()
-            
-            # Only update if state changed to avoid unnecessary window operations
-            if mayaIsActive != self.lastMayaState:
-                self.lastMayaState = mayaIsActive
-                self.updateWindowState(mayaIsActive)
-                
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Maya detection error: {e}')
-    
-    def isMayaCurrentlyActive(self):
-        """Check if Maya is the currently active application"""
-        try:
-            # Method 1: Check if Maya main window is active (most reliable)
-            if self.mayaMainWindow.isActiveWindow():
-                return True
-            
-            # Method 2: Check if any Maya child window is active
-            activeWindow = QtWidgets.QApplication.activeWindow()
-            if activeWindow and self.isWindowRelatedToMaya(activeWindow):
-                return True
-            
-            # Method 3: Process-level check - if another app is clearly active, Maya is not
-            try:
-                app = QtWidgets.QApplication.instance()
-                appState = app.applicationState()
-                
-                # If Qt says the application is not active, Maya is definitely not active
-                if appState != QtCore.Qt.ApplicationActive:
-                    return False
-                    
-            except Exception as e:
-                if DEBUG_ALL: print(f'🔍 App state check error: {e}')
-            
-            # Method 4: Windows-specific process check (more accurate)
-            if hasattr(self, '_checkWindowsProcess'):
-                return self._checkWindowsProcess()
-            
-            # Method 5: Final fallback - check if our window is visible but not active
-            # This indicates another app might be active
-            if self.isVisible() and not self.isActiveWindow():
-                # Check if any other non-Maya window might be active
-                try:
-                    activeWidget = QtWidgets.QApplication.activeWidget()
-                    if activeWidget and not self.isWindowRelatedToMaya(activeWidget):
-                        return False
-                except:
-                    pass
-            
-            # Conservative fallback: assume Maya is active
-            return True
-            
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Maya activity check error: {e}')
-            return True  # Conservative fallback
-    
-    def _checkWindowsProcess(self):
-        """Windows-specific method to check if Maya is the foreground process"""
-        try:
-            import ctypes
-            import ctypes.wintypes
-            import os
-            
-            # Get foreground window handle
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetForegroundWindow()
-            
-            if not hwnd:
-                return True  # Can't determine, assume Maya is active
-            
-            # Get process ID of foreground window
-            foreground_pid = ctypes.wintypes.DWORD()
-            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(foreground_pid))
-            
-            # Get current Maya process ID
-            current_pid = os.getpid()
-            
-            # Maya is active only if foreground process is Maya
-            is_maya_active = (foreground_pid.value == current_pid)
-            
-            if DEBUG_ALL:
-                print(f'🔍 Windows check: Maya PID={current_pid}, Foreground PID={foreground_pid.value}, Maya Active={is_maya_active}')
-            
-            return is_maya_active
-            
-        except ImportError:
-            # Not Windows or missing libraries
-            if DEBUG_ALL: print('🔍 Windows libraries not available')
-            return True
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Windows process check error: {e}')
-            return True
-    
-    def isWindowRelatedToMaya(self, window):
-        """Check if a window belongs to Maya"""
-        try:
-            if not window:
-                return False
-            
-            # Check window hierarchy
-            current = window
-            for _ in range(10):  # Limit depth to avoid infinite loops
-                if current == self.mayaMainWindow:
-                    return True
-                    
-                # Check object name for Maya indicators
-                objName = current.objectName()
-                if objName and ('maya' in objName.lower() or 'MayaWindow' in objName):
-                    return True
-                    
-                # Check window title for Maya indicators
-                title = current.windowTitle()
-                if title and ('maya' in title.lower() or 'autodesk' in title.lower()):
-                    return True
-                
-                parent = current.parent()
-                if not parent or parent == current:
-                    break
-                current = parent
-            
-            return False
-        except:
-            return False
-    
-    def updateWindowState(self, mayaIsActive):
-        """Update window always-on-top state based on Maya activity - Fixed window movement"""
-        try:
-            currentFlags = self.windowFlags()
-            hasAlwaysOnTop = bool(currentFlags & QtCore.Qt.WindowStaysOnTopHint)
-            
-            if mayaIsActive and not hasAlwaysOnTop:
-                # Maya is active, enable always on top
-                # 🔧 FIXED: Properly save and restore window geometry
-                savedGeometry = self.saveGeometry()  # This includes position, size, and window state
-                savedWindowState = self.saveState() if hasattr(self, 'saveState') else None
-                
-                # Change the window flags
-                self.setWindowFlags(currentFlags | QtCore.Qt.WindowStaysOnTopHint)
-                
-                # Show the window (required after setWindowFlags)
-                self.show()
-                
-                # 🔧 FIXED: Restore the exact geometry and state
-                self.restoreGeometry(savedGeometry)
-                if savedWindowState:
-                    self.restoreState(savedWindowState)
-                
-                # 🔧 FIXED: Force window to activate and stay in correct position
-                self.activateWindow()
-                self.raise_()
-                
-                if DEBUG_ALL: print("🔼 OnionSkinRenderer: Auto-enabled (Maya active) - Position preserved")
-                
-            elif not mayaIsActive and hasAlwaysOnTop:
-                # Maya not active, disable always on top
-                # 🔧 FIXED: Properly save and restore window geometry
-                savedGeometry = self.saveGeometry()  # This includes position, size, and window state
-                savedWindowState = self.saveState() if hasattr(self, 'saveState') else None
-                
-                # Change the window flags
-                self.setWindowFlags(currentFlags & ~QtCore.Qt.WindowStaysOnTopHint)
-                
-                # Show the window (required after setWindowFlags)
-                self.show()
-                
-                # 🔧 FIXED: Restore the exact geometry and state
-                self.restoreGeometry(savedGeometry)
-                if savedWindowState:
-                    self.restoreState(savedWindowState)
-                
-                if DEBUG_ALL: print("🔽 OnionSkinRenderer: Auto-disabled (Maya inactive) - Position preserved")
-                
-        except Exception as e:
-            if DEBUG_ALL: print(f'🔍 Window state update error: {e}')
 
     #
     def closeEvent(self, event):
@@ -413,11 +303,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.isReopeningWindow = getattr(self, '_isReopeningWindow', False)
         
         try:
-            # 1. Stop detection timer
-            if hasattr(self, 'mayaDetectionTimer'):
-                self.mayaDetectionTimer.stop()
-                self.mayaDetectionTimer.deleteLater()
-            
             # 1.5. Clean up scene change callbacks
             if hasattr(self, 'sceneCallback'):
                 import maya.OpenMaya as om
@@ -426,7 +311,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
                 if DEBUG_ALL: print('🎬 Scene callbacks cleaned up')
             
             # 2. Save settings before closing (now includes geometry)
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             
             # 3. 🚨 ONLY uninitialize Core if this is a REAL close, not a reopen
             if not self.isReopeningWindow:
@@ -460,13 +345,8 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         if DEBUG_ALL: print('🚪 OnionSkinRenderer: Dock close event triggered')
         
         try:
-            # Stop detection timer
-            if hasattr(self, 'mayaDetectionTimer'):
-                self.mayaDetectionTimer.stop()
-                self.mayaDetectionTimer.deleteLater()
-            
             # Save and cleanup
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             core.uninitializeOverride()
             
             # Clear global reference
@@ -512,7 +392,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         self.settings_clearBuffer.triggered.connect(self.clearBuffer)
         self.settings_autoClearBuffer.triggered.connect(self.setAutoClearBuffer)
         self.settings_preferences.triggered.connect(self.changePrefs)  # FIXED: Connect preferences menu
-        self.settings_saveSettings.triggered.connect(self.saveSettings)
+        self.settings_saveSettings.triggered.connect(self.settings_manager.saveSettings)
 
         self.targetObjects_grp.clicked.connect(self.toggleGroupBox)
         self.onionSkinFrames_grp.clicked.connect(self.toggleGroupBox)
@@ -647,7 +527,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
     def toggleRelativeKeyframeDisplay(self):
         sender = self.sender()
         core.OSR_INSTANCE.setRelativeDisplayMode(self.sender().isChecked())
-        self.saveSettings()
+        self.settings_manager.saveSettings()
 
     # 
     def addAbsoluteTargetFrame(self, **kwargs):
@@ -693,7 +573,7 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
         color = QtWidgets.QColorDialog.getColor()
         if color.isValid():
             self.setOnionSkinColor(self.sender(), color.getRgb())
-        self.saveSettings()
+        self.settings_manager.saveSettings()
 
     #
     def setOpacityForRelativeTargetFrame(self):
@@ -728,12 +608,12 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
             core.OSR_INSTANCE.setTintSeed(values['tintSeed'])
             self.relativeFrameCount = values['relativeKeyCount']*2
             self.refreshRelativeFrame()
-            self.saveSettings()
+            self.settings_manager.saveSettings()
             
     #     
     def setRelativeStep(self):
         core.OSR_INSTANCE.setRelativeStep(self.sender().value())
-        self.saveSettings()     
+        self.settings_manager.saveSettings()
 
     # togle active or saved editor between onion Skin Renderer and vp2
     def toggleRenderer(self):
@@ -862,70 +742,6 @@ class OSRController(MayaQWidgetDockableMixin, QtWidgets.QMainWindow, ui_window.U
     def setOnionSkinColor(self, btn, rgba):
             btn.setStyleSheet('background-color: rgb(%s,%s,%s);'%(rgba[0], rgba[1], rgba[2]))
             core.OSR_INSTANCE.setTint(rgba, btn.objectName())
-
-    #
-    def loadSettings(self):
-        with open(os.path.join(self.toolPath,'settings.txt')) as json_file:  
-            self.preferences = json.load(json_file)
-            self.settings_autoClearBuffer.setChecked(self.preferences.setdefault('autoClearBuffer',True))
-            core.OSR_INSTANCE.setAutoClearBuffer(self.preferences.setdefault('autoClearBuffer',True))
-
-            self.relative_keyframes_chkbx.setChecked(self.preferences.setdefault('displayKeyframes',True))
-            core.OSR_INSTANCE.setRelativeDisplayMode(self.preferences.setdefault('displayKeyframes',True))
-
-            self.setOnionSkinColor(self.relative_futureTint_btn, self.preferences.setdefault('rFutureTint',[0,0,125]))
-            self.setOnionSkinColor(self.relative_pastTint_btn, self.preferences.setdefault('rPastTint',[0,125,0]))
-            self.setOnionSkinColor(self.absolute_tint_btn, self.preferences.setdefault('aTint', [125,0,0]))
-            core.OSR_INSTANCE.setTintSeed(self.preferences.setdefault('tintSeed', 0))
-            self.tint_type_cBox.setCurrentIndex(self.preferences.setdefault('tintType',0))
-
-
-            self.onionType_cBox.setCurrentIndex(self.preferences.setdefault('onionType',1))
-            self.drawBehind_chkBx.setChecked(self.preferences.setdefault('drawBehind', True))
-
-            self.relativeFrameCount = self.preferences.setdefault('relativeFrameAmount',4)
-            self.refreshRelativeFrame()
-            activeRelativeFrames = self.preferences.setdefault('activeRelativeFrames',[])
-            for child in self.relative_frame.findChildren(OnionListFrame):
-                if int(child.frame_number.text()) in activeRelativeFrames:
-                    child.frame_visibility_btn.setChecked(True)
-
-            self.relative_step_spinBox.setValue(self.preferences.setdefault('relativeStep', 1))
-
-            core.OSR_INSTANCE.setMaxBuffer(self.preferences.setdefault('maxBufferSize', 200))
-            core.OSR_INSTANCE.setOutlineWidth(self.preferences.setdefault('outlineWidth',3))
-
-    
-    # save values into a json file
-    def saveSettings(self):
-        if DEBUG_ALL: print('start save')
-        data = {}
-        data['autoClearBuffer'] = self.settings_autoClearBuffer.isChecked()
-        data['displayKeyframes'] = self.relative_keyframes_chkbx.isChecked()
-        data['rFutureTint'] = self.extractRGBFromStylesheet(self.relative_futureTint_btn.styleSheet())
-        data['rPastTint'] = self.extractRGBFromStylesheet(self.relative_pastTint_btn.styleSheet())
-        data['aTint'] = self.extractRGBFromStylesheet(self.absolute_tint_btn.styleSheet())
-        data['tintSeed'] = core.OSR_INSTANCE.getTintSeed()
-        data['tintType'] = self.tint_type_cBox.currentIndex()
-        data['relativeFrameAmount'] = self.relativeFrameCount
-        data['relativeStep'] = self.relative_step_spinBox.value()
-        data['maxBufferSize'] = core.OSR_INSTANCE.getMaxBuffer()
-        data['outlineWidth'] = core.OSR_INSTANCE.getOutlineWidth()
-        data['onionType'] = self.onionType_cBox.currentIndex()
-        data['drawBehind'] = self.drawBehind_chkBx.isChecked()
-        data['activeRelativeFrames'] = self.getActiveRelativeFrameIndices()
-
-        try:
-            with open(os.path.join(self.toolPath,'settings.txt'), 'w') as outfile:  
-                json.dump(data, outfile)
-            if DEBUG_ALL: print('end save - success')
-        except Exception as e:
-            if DEBUG_ALL: print(f'Settings save error: {e}')
-            # Continue without saving to avoid blocking the UI
-        
-    # 
-    def extractRGBFromStylesheet(self, s):
-        return [int(x) for x in (s[s.find("(")+1:s.find(")")]).split(',')]
 
     def getActiveRelativeFrameIndices(self):
         activeFrames = []
@@ -1229,7 +1045,7 @@ the widget for displaying a frame in a list. includes visibility, opacity slider
 and on demand a remove button   
 '''
 class OnionListFrame(QtWidgets.QWidget, wdgt_Frame.Ui_onionSkinFrame_layout):
-    def __init__(self, parent = getMayaMainWindow()):
+    def __init__(self, parent=None):
         super(OnionListFrame, self).__init__(parent)
         self.setupUi(self)
 
@@ -1254,7 +1070,7 @@ OBJECT WIDGET
 the widget for displaying an object in a list
 '''
 class TargetObjectListWidget(QtWidgets.QWidget, wdgt_MeshListObj.Ui_onionSkinObject_layout):
-    def __init__(self, parent = getMayaMainWindow()):
+    def __init__(self, parent=None):
         super(TargetObjectListWidget, self).__init__(parent)
         self.setupUi(self)
 
